@@ -1,4 +1,5 @@
-import re, os
+import re, os, csv
+from dotenv import load_dotenv
 from selenium import webdriver
 
 # Web Drivers
@@ -10,24 +11,33 @@ from selenium.webdriver.support import expected_conditions as EC
 # Error Handling
 from selenium.common.exceptions import NoSuchElementException
 
-# Supress automatic console logs
-os.environ["TF_CPP_MIN_LOG_LEVEL"] = "3"
-
 # CONSTANTS
+load_dotenv()
 URL = "https://canvas.ubc.ca/courses"
-AUTH = {"username": "", "password": ""}
+AUTH = {"username": os.getenv("CANVAS_USERNAME"), "password": os.getenv("CANVAS_PASSWORD")}
 HTML_NAMES = {"courses_list_class": "course-list-table-row",
               "grades_element_class": "student_assignment",
-              "grade_name": "title",
-              "grade_mark": "tooltip"}
+              "grade_description": "title",
+              "grade_score": "grade"}
 DRIVER = None
 
 class Course:
-    def __init__(self, name=None, link=None, grade=None, raw_grades=None):
+    def __init__(self, name=None, code=None, subject=None, link=None, grade=None, all_grades=None):
         self.name = name
+        self.code = code
+        self.subject = subject
         self.link = link
         self.grade = grade
-        self.raw_grades = raw_grades
+        self.all_grades = all_grades
+    
+    def __str__(self):
+        return f"Name: {self.name}, All Grades: {self.all_grades}, Final Grade: {self.grade}"
+    
+    def __repr__(self):
+        return f"Course({self.__str__()})"
+    
+    def asList(self):
+        return [self.name, self.code, self.subject, self.link, self.grade, self.all_grades]
 
 class Grade:
     def __init__(self, name=None, category=None, points_achieved=None, points_total=None):
@@ -44,11 +54,11 @@ class Grade:
     
     def __str__(self):
         return f"Name: {self.name}, Grade: {self.grade}"
+    
+    def __repr__(self):
+        return f"Grade({self.__str__()})"
 
 def main():
-    AUTH["username"] = input("username: ")
-    AUTH["password"] = input("password: ")
-
     global DRIVER
     DRIVER = webdriver.Chrome()
     DRIVER.get(URL)
@@ -57,9 +67,11 @@ def main():
     courses_list = getCourses()
 
     for course in courses_list:
-        course.raw_grades = getGrades(course)
-
-    input("Press Enter to close...")
+        course.all_grades = getGrades(course)
+    
+    with open("test.csv", "w", newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(course.asList() for course in courses_list)
 
 def authenticate():
     print(DRIVER)
@@ -100,19 +112,19 @@ def getGrades(course): # Return array of grades for given course
     for element in elements:
         grade = Grade()
         try:
-            grade_description = element.find_element(By.CLASS_NAME, HTML_NAMES["grade_name"])
+            grade_description = element.find_element(By.CLASS_NAME, HTML_NAMES["grade_description"])
             grade.name = grade_description.find_element(By.TAG_NAME, "a").text
             grade.category = grade_description.find_element(By.TAG_NAME, "div").text
 
-            grade_scores = element.find_element(By.CLASS_NAME, HTML_NAMES["grade_mark"]).find_elements(By.XPATH, "./span")
+            grade_score = element.find_element(By.CLASS_NAME, HTML_NAMES["grade_score"])
 
-            print(f"{course}, {grade.name}")
-
-            points_achieved_str = re.search(r"\d+(\.\d+)?", grade_scores[0].text)
-            grade.points_achieved = float(points_achieved_str.group()) if points_achieved_str else None
-
-            points_total_str = re.search(r"\d+(\.\d+)?", grade_scores[1].text)
-            grade.points_total = float(points_total_str.group()) if points_total_str else None
+            if grade_score.text and isNumber(grade_score.text):
+                if '%' in grade_score.text:
+                    grade.points_achieved = float(grade_score.text.strip()[:-1])
+                    grade.points_total = float(100)
+                else:
+                    grade.points_achieved = float(grade_score.text.strip())
+                    grade.points_total = float(element.find_element(By.XPATH, "following-sibling::*[1]").text.strip()[2:])
 
             grades.append(grade)
         except NoSuchElementException:
@@ -123,6 +135,9 @@ def getGrades(course): # Return array of grades for given course
 
 def wait(max_time=10): # Wait for page to load
     WebDriverWait(DRIVER, max_time).until(lambda driver_instance: driver_instance.execute_script("return document.readyState") == "complete")
+
+def isNumber(str):
+    return re.match(r"\d+(\.\d+)?%?", str.strip())
 
 if __name__ == "__main__":
     main()
